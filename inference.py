@@ -26,10 +26,12 @@ import pytorch_lightning as pl
 from models.regressor import RNet
 
 import shutil
+from osgeo import gdal, osr
 
 OUTPUT_DIR = Path("./output_inference")
 CHECKPOINT = "saved_checkpoints/SSLhuge_satellite.pth"
 DISPLAY = True
+
 
 class SSLAE(nn.Module):
     def __init__(self, pretrained=None, classify=True, n_bins=256, huge=False):
@@ -204,67 +206,45 @@ def evaluate(model,
     
     fig_batch_ind = 0
 
+    # Sample geoextent & resolution
+    x1 = 139.7524088
+    y1 = 35.9806627
+    x2 = 139.7557615
+    y2 = 35.9790435
+    x_res = (x1 - x2)/256
+    y_res = (y1 - y2)/256
+
+    driver = gdal.GetDriverByName('GTiff')
+
+    out_srs = osr.SpatialReference()
+    out_srs.ImportFromEPSG(4326)
+
     for batch in tqdm(dataloader):
         chm = batch['chm'].detach()
         batch = {k:v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
         pred = model(norm(batch['img']))
         pred = pred.cpu().detach().relu()
         
-        if display == True:
-            # display Predicted CHM
-            for ind in range(pred.shape[0]):     
-                fig, ax = plt.subplots(nrows=1, ncols=4, figsize=(20, 5))
-                plt.subplots_adjust(hspace=0.5)
-                img_no_norm = batch['img_no_norm'][ind].cpu()
-                Inn = np.moveaxis(img_no_norm.numpy(), 0, 2)
-                img = batch['img'][ind].cpu()
-                I = np.moveaxis(img.numpy(), 0, 2)
-                gt = batch['chm'][ind].cpu()
-                GT = np.moveaxis(gt.numpy(), 0, 2)
-                ax[0].imshow(Inn)
-                ax[0].set_title(f"Image",fontsize=12)
-                ax[0].set_xlabel('meters')
-                ax[1].imshow(I)
-                ax[1].set_title(f"Normalized Image ",fontsize=12)
-                ax[1].set_xlabel('meters')
-                combined_data = np.concatenate((batch['chm'][ind].cpu().numpy(), pred[ind].detach().numpy()), axis=0)
-                _min, _max = np.amin(combined_data), np.amax(combined_data)
-                pltim = ax[2].imshow(pred[ind][0].detach().numpy(), vmin = _min, vmax = _max)
-                ax[2].set_title(f"Pred CHM",fontsize=12)
-                ax[2].set_xlabel('meters')
-                pltim = ax[3].imshow(GT, vmin = _min, vmax = _max)
-                ax[3].set_title(f"GT CHM",fontsize=12)
-                ax[3].set_xlabel('meters') 
-                cax = fig.add_axes([0.95, 0.15, 0.02, 0.7])
-                fig.colorbar(pltim, cax=cax, orientation="vertical")
-                cax.set_title("meters", fontsize=12) 
-                plt.savefig(f"{OUTPUT_DIR}/fig_{fig_batch_ind}_{ind}_{normtype}.png", dpi=300)
-            
-            fig_batch_ind = fig_batch_ind + 1
+        numpy_arrays = []
         
-        chm_block_mean = downsampler(chm[..., bd:, bd:])
-        pred_block_mean = downsampler(pred[..., bd:, bd:])
-        
-        metric_classes['mae'].update(pred, chm)
-        metric_classes['rmse'].update(pred, chm)
-        metric_classes['r2'].update(pred.flatten(), chm.flatten())
-        metric_classes['r2_block'].update(pred_block_mean.flatten(), chm_block_mean.flatten())
-    
-        preds.append(pred), chms.append(chm)
-        chm_block_means.append(chm_block_mean)
-        pred_block_means.append(pred_block_mean)
-        if display:
-            break
-    preds, chms = torch.cat(preds), torch.cat(chms)
-    
-    # metrics = {k:v.compute() for k, v in metric_classes.items()}
-    # torch.save(metrics, f'{name}/metrics.pt')
 
-    #print metrics
-    for k, v in metrics.items():
-        print(f'{k} {v.item():.2f}')
-    print(f"Bias: {(preds.flatten()-chms.flatten()).numpy().mean():.2f}")
-    
+        for ind in range(pred.shape[0]):
+
+            image = pred[ind][0].detach().numpy()
+            image *= (255.0/image.max()) # scale values back to 0-255
+            image = np.round(image) # round to integers
+
+            out_ds = driver.Create(f'{OUTPUT_DIR}/output.tif', xsize=256, ysize=256, bands=1, eType=gdal.GDT_Byte)
+            out_ds.SetGeoTransform((x1, x_res, 0, y1, 0, y_res))
+
+            band = out_ds.GetRasterBand(1)
+            band.WriteArray(image)
+            band.FlushCache()
+
+            out_ds.SetProjection(out_srs.ExportToWkt())
+            out_ds = None           
+
+            print()
 
 def parse_args():
     parser = argparse.ArgumentParser(
