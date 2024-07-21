@@ -25,6 +25,12 @@ from models.dpt_head import DPTHead
 import pytorch_lightning as pl
 from models.regressor import RNet
 
+import shutil
+
+OUTPUT_DIR = Path("./output_inference")
+CHECKPOINT = "saved_checkpoints/SSLhuge_satellite.pth"
+DISPLAY = True
+
 class SSLAE(nn.Module):
     def __init__(self, pretrained=None, classify=True, n_bins=256, huge=False):
         super().__init__()
@@ -232,7 +238,7 @@ def evaluate(model,
                 cax = fig.add_axes([0.95, 0.15, 0.02, 0.7])
                 fig.colorbar(pltim, cax=cax, orientation="vertical")
                 cax.set_title("meters", fontsize=12) 
-                plt.savefig(f"{name}/fig_{fig_batch_ind}_{ind}_{normtype}.png", dpi=300)
+                plt.savefig(f"{OUTPUT_DIR}/fig_{fig_batch_ind}_{ind}_{normtype}.png", dpi=300)
             
             fig_batch_ind = fig_batch_ind + 1
         
@@ -251,8 +257,8 @@ def evaluate(model,
             break
     preds, chms = torch.cat(preds), torch.cat(chms)
     
-    metrics = {k:v.compute() for k, v in metric_classes.items()}
-    torch.save(metrics, f'{name}/metrics.pt')
+    # metrics = {k:v.compute() for k, v in metric_classes.items()}
+    # torch.save(metrics, f'{name}/metrics.pt')
 
     #print metrics
     for k, v in metrics.items():
@@ -263,8 +269,8 @@ def evaluate(model,
 def parse_args():
     parser = argparse.ArgumentParser(
         description='test a model')
-    parser.add_argument('--checkpoint', type=str, help='CHM pred checkpoint file', default='saved_checkpoints/compressed_SSLlarge.pth')
-    parser.add_argument('--name', type=str, help='run name', default='output_inference')
+    # parser.add_argument('--checkpoint', type=str, help='CHM pred checkpoint file', default='saved_checkpoints/compressed_SSLlarge.pth')
+    # parser.add_argument('--name', type=str, help='run name', default='output_inference')
     parser.add_argument('--trained_rgb', type=str, help='True if model was finetuned on aerial data')
     parser.add_argument('--normnet', type=str, help='path to a normalization network', default='saved_checkpoints/aerial_normalization_quantiles_predictor.ckpt')
     parser.add_argument('--normtype', type=int, help='0: no norm; 1: old norm, 2: new norm', default=2) 
@@ -277,12 +283,14 @@ def parse_args():
 def main():
     # 0- read args 
     args = parse_args()
-    if 'compressed' in args.checkpoint:
+    if 'compressed' in CHECKPOINT:
         device='cpu'
     else:
         device='cuda:0'
     
-    os.system("mkdir "+args.name)
+    if os.path.exists(OUTPUT_DIR):
+        shutil.rmtree(OUTPUT_DIR)
+    os.mkdir(OUTPUT_DIR)
     
     # 1- load network and its weight to normalize aerial images to match intensities from satellite images. 
     norm_path = args.normnet 
@@ -298,7 +306,7 @@ def main():
     model_norm.load_state_dict(state_dict)
         
     # 2- load SSL model
-    model = SSLModule(ssl_path = args.checkpoint)
+    model = SSLModule(ssl_path = CHECKPOINT)
     model.to(device)
     model = model.eval()
     
@@ -307,7 +315,7 @@ def main():
     norm = norm.to(device)
     
     # 4- evaluation 
-    evaluate(model, norm, model_norm, name=args.name, bs=16, trained_rgb=args.trained_rgb, normtype=args.normtype, device=device, display=args.display)
+    evaluate(model, norm, model_norm, name="output", bs=16, trained_rgb=args.trained_rgb, normtype=args.normtype, device=device, display=DISPLAY)
 
 if __name__ == '__main__':
     main()
